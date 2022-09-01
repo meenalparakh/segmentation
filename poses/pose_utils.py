@@ -3,7 +3,7 @@ import os
 import sys
 import imageio
 import skimage.transform
-
+import pickle
 from poses.colmap_wrapper import run_colmap
 import poses.colmap_read_model as read_model
 
@@ -24,73 +24,60 @@ def load_colmap_data(realdir):
     imagesfile = os.path.join(realdir, 'sparse/0/images.bin')
     imdata = read_model.read_images_binary(imagesfile)
 
-    w2c_mats = []
+    # w2c_mats = []
+    poses = []
+    image_fnames = []
     bottom = np.array([0,0,0,1.]).reshape([1,4])
 
     names = [imdata[k].name for k in imdata]
     print( 'Images #', len(names))
     perm = np.argsort(names)
+
     for k in imdata:
         im = imdata[k]
-        R = im.qvec2rotmat()
-        t = im.tvec.reshape([3,1])
-        m = np.concatenate([np.concatenate([R, t], 1), bottom], 0)
-        w2c_mats.append(m)
+        image_fnames.append(im.name)
+        poses.append((im.tvec, im.qvec))
+        # R = im.qvec2rotmat()
+        # t = im.tvec.reshape([3,1])
+        # m = np.concatenate([np.concatenate([R, t], 1), bottom], 0)
+        # w2c_mats.append(m)
 
-    w2c_mats = np.stack(w2c_mats, 0)
-    c2w_mats = np.linalg.inv(w2c_mats)
+    # w2c_mats = np.stack(w2c_mats, 0)
+    return poses, image_fnames
 
-    poses = c2w_mats[:, :3, :4].transpose([1,2,0])
-    poses = np.concatenate([poses, np.tile(hwf[..., np.newaxis], [1,1,poses.shape[-1]])], 1)
+    # c2w_mats = np.linalg.inv(w2c_mats)
 
-    points3dfile = os.path.join(realdir, 'sparse/0/points3D.bin')
-    pts3d = read_model.read_points3d_binary(points3dfile)
+    # poses = w2c_mats
+    # poses = c2w_mats[:, :3, :4].transpose([1,2,0])
+    # poses = np.concatenate([poses, np.tile(hwf[..., np.newaxis], [1,1,poses.shape[-1]])], 1)
+
+    # points3dfile = os.path.join(realdir, 'sparse/0/points3D.bin')
+    # pts3d = read_model.read_points3d_binary(points3dfile)
 
     # must switch to [-u, r, -t] from [r, -u, t], NOT [r, u, -t]
-    poses = np.concatenate([poses[:, 1:2, :],
-                            poses[:, 0:1, :],
-                            -poses[:, 2:3, :],
-                            poses[:, 3:4, :],
-                            poses[:, 4:5, :]],
-                           1)
+    # poses = np.concatenate([poses[:, 1:2, :],
+    #                         poses[:, 0:1, :],
+    #                         -poses[:, 2:3, :],
+    #                         poses[:, 3:4, :],
+    #                         poses[:, 4:5, :]],
+    #                        1)
 
     return poses, pts3d, perm
 
+def save_poses(basedir, poses, fnames):
+    # with open(os.path.join(basedir, 'poses_bounds.npy'), 'wb'), poses)
 
-def save_poses(basedir, poses, pts3d, perm):
-    pts_arr = []
-    vis_arr = []
-    for k in pts3d:
-        pts_arr.append(pts3d[k].xyz)
-        cams = [0] * poses.shape[-1]
-        for ind in pts3d[k].image_ids:
-            if len(cams) < ind - 1:
-                print('ERROR: the correct camera poses for current points cannot be accessed')
-                return
-            cams[ind-1] = 1
-        vis_arr.append(cams)
+    with open(os.path.join(basedir, 'image_poses.pkl'), 'wb') as f:
+        pickle.dump((poses, fnames), f)
 
-    pts_arr = np.array(pts_arr)
-    vis_arr = np.array(vis_arr)
-    print( 'Points', pts_arr.shape, 'Visibility', vis_arr.shape )
+    return 
 
-    zvals = np.sum(-(pts_arr[:, np.newaxis, :].transpose([2,0,1]) - poses[:3, 3:4, :]) * poses[:3, 2:3, :], 0)
-    valid_z = zvals[vis_arr==1]
-    print( 'Depth stats', valid_z.min(), valid_z.max(), valid_z.mean() )
+def load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
 
-    save_arr = []
-    for i in perm:
-        vis = vis_arr[:, i]
-        zs = zvals[:, i]
-        zs = zs[vis==1]
-        close_depth, inf_depth = np.percentile(zs, .1), np.percentile(zs, 99.9)
-        # print( i, close_depth, inf_depth )
+    with open(os.path.join(basedir, 'image_poses.pkl'), 'rb') as f:
+        poses, fnames = pickle.load(f)
 
-        save_arr.append(np.concatenate([poses[..., i].ravel(), np.array([close_depth, inf_depth])], 0))
-    save_arr = np.array(save_arr)
-
-    np.save(os.path.join(basedir, 'poses_bounds.npy'), save_arr)
-
+    return poses, fnames
 
 def minify_v0(basedir, factors=[], resolutions=[]):
     needtoload = False
@@ -190,76 +177,11 @@ def minify(basedir, factors=[], resolutions=[]):
             print('Removed duplicates')
         print('Done')
 
-
-
-
-def load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
-
-    poses_arr = np.load(os.path.join(basedir, 'poses_bounds.npy'))
-    poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1,2,0])
-    bds = poses_arr[:, -2:].transpose([1,0])
-
-    img0 = [os.path.join(basedir, 'images', f) for f in sorted(os.listdir(os.path.join(basedir, 'images'))) \
-            if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')][0]
-    sh = imageio.imread(img0).shape
-
-    sfx = ''
-
-    if factor is not None:
-        sfx = '_{}'.format(factor)
-        minify(basedir, factors=[factor])
-        factor = factor
-    elif height is not None:
-        factor = sh[0] / float(height)
-        width = int(sh[1] / factor)
-        minify(basedir, resolutions=[[height, width]])
-        sfx = '_{}x{}'.format(width, height)
-    elif width is not None:
-        factor = sh[1] / float(width)
-        height = int(sh[0] / factor)
-        minify(basedir, resolutions=[[height, width]])
-        sfx = '_{}x{}'.format(width, height)
-    else:
-        factor = 1
-
-    imgdir = os.path.join(basedir, 'images' + sfx)
-    if not os.path.exists(imgdir):
-        print( imgdir, 'does not exist, returning' )
-        return
-
-    imgfiles = [os.path.join(imgdir, f) for f in sorted(os.listdir(imgdir)) if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')]
-    if poses.shape[-1] != len(imgfiles):
-        print( 'Mismatch between imgs {} and poses {} !!!!'.format(len(imgfiles), poses.shape[-1]) )
-        return
-
-    sh = imageio.imread(imgfiles[0]).shape
-    poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
-    poses[2, 4, :] = poses[2, 4, :] * 1./factor
-
-    if not load_imgs:
-        return poses, bds
-
-    # imgs = [imageio.imread(f, ignoregamma=True)[...,:3]/255. for f in imgfiles]
-    def imread(f):
-        if f.endswith('png'):
-            return imageio.imread(f, ignoregamma=True)
-        else:
-            return imageio.imread(f)
-
-    imgs = imgs = [imread(f)[...,:3]/255. for f in imgfiles]
-    imgs = np.stack(imgs, -1)
-
-    print('Loaded image data', imgs.shape, poses[:,-1,0])
-    return poses, bds, imgs, imgfiles
-
-
-
-
-
-def gen_poses(basedir, match_type,
-            call_colmap='colmap',
+def gen_poses(basedir, match_type, cam_model=1, cam_params=None,
+            call_colmap='colmap', dense_reconstruct=False,
             factors=None):
 
+    print(f'base_dir: {basedir}, \nmatch_type:{match_type}, \ncam_model={cam_model}, \ncam_params:{cam_params}')
     files_needed = ['{}.bin'.format(f) for f in ['cameras', 'images', 'points3D']]
     if os.path.exists(os.path.join(basedir, 'sparse/0')):
         files_had = os.listdir(os.path.join(basedir, 'sparse/0'))
@@ -267,19 +189,22 @@ def gen_poses(basedir, match_type,
         files_had = []
     if not all([f in files_had for f in files_needed]):
         print( 'Need to run COLMAP' )
-        run_colmap(basedir, match_type, call_colmap)
+        run_colmap(basedir, match_type, cam_model, cam_params, call_colmap,
+                    dense_reconstruct=dense_reconstruct)
     else:
         print('Don\'t need to run COLMAP')
 
     print( 'Post-colmap')
 
-    poses, pts3d, perm = load_colmap_data(basedir)
+    # poses, pts3d, perm = load_colmap_data(basedir)
+    poses, fnames = load_colmap_data(basedir)
 
-    save_poses(basedir, poses, pts3d, perm)
+    # save_poses(basedir, poses, pts3d, perm)
+    save_poses(basedir, poses, fnames)
 
-    if factors is not None:
-        print( 'Factors:', factors)
-        minify(basedir, factors)
+    # if factors is not None:
+    #     print( 'Factors:', factors)
+    #     minify(basedir, factors)
 
     print( 'Done with imgs2poses' )
 

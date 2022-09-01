@@ -1,3 +1,4 @@
+from __future__ import print_function
 
 import cv2
 import numpy as np
@@ -8,177 +9,189 @@ import os
 import time
 import open3d
 from poses.pose_utils import gen_poses, load_data
+from poses.colmap_read_model import read_cameras_text
 import sys
+# from airobot.utils.common import to_rot_mat, rot2quat
 
 import argparse
+from airobot import Robot
+import shutil
+import json, random
+from datetime import datetime
+import argparse
+from visualization_utils import *
+from get_pcd_utils import *
 
+def collect_data(n, colmap_dir, depth_scale=1000):
 
-## Remeber that COLMAP is computing intrinsics on its own
-
-def transform_pointcloud(points, transform):
-    """Apply rigid transformation to 3D pointcloud.
-
-    Args:
-      points: HxWx3 float array of 3D points in camera coordinates.
-      transform: 4x4 float array representing a rigid transformation matrix.
-
-    Returns:
-      points: HxWx3 float array of transformed 3D points.
-    """
-    padding = ((0, 0), (0, 0), (0, 1))
-    homogen_points = np.pad(points.copy(), padding,
-                            'constant', constant_values=1)
-    for i in range(3):
-        points[Ellipsis, i] = np.sum(transform[i, :] * homogen_points, axis=-1)
-    return points
-
-
-def get_pointcloud_from_depth(depth, intrinsics):
-    """Get 3D pointcloud from perspective depth image.
-
-    Args:
-      depth: HxW float array of perspective depth in meters.
-      intrinsics: 3x3 float array of camera intrinsics matrix.
-
-    Returns:
-      points: HxWx3 float array of 3D points in camera coordinates.
-    """
-    height, width = depth.shape
-    xlin = np.linspace(0, width - 1, width)
-    ylin = np.linspace(0, height - 1, height)
-    px, py = np.meshgrid(xlin, ylin)
-    px = (px - intrinsics[0, 2]) * (depth / intrinsics[0, 0])
-    py = (py - intrinsics[1, 2]) * (depth / intrinsics[1, 1])
-    points = np.float32([px, py, depth]).transpose(1, 2, 0)
-    return points
-
-def flatten_pcd_data(xyzs, colors, labels=None):
-
-    if labels is None:
-        labels = [None]*len(colors)
-
-    xyzs_lst = []
-    colors_lst = []
-    labels_lst = []
-
-    H, W = xyzs[-1].shape[:2]
-    # for xyz, color, label in zip(xyzs, colors, labels):
-    for xyz, color, label in zip(xyzs, colors, labels):
-        if label is None:
-            label = np.zeros((H, W), dtype=np.uint8)
-        xyzs_lst.extend(list(xyz.reshape([H*W, 3])))
-        colors_lst.extend(list(color.reshape([H*W, 3])))
-        labels_lst.extend(list(label.reshape([H*W, 1])))
-
-
-    return xyzs_lst, colors_lst, labels_lst
-
-def get_pcds(colors, depths, configs, labels=None):
-    """Reconstruct top-down heightmap views from multiple 3D pointclouds."""
-    xyzs = []
-
-    for depth, config in zip(depths, configs):
-        # print(f'inside reconstruct heightmap: {color.shape, depth.shape}')
-        intrinsics = np.array(config['intrinsics']).reshape(3, 3)
-        xyz = get_pointcloud_from_depth(depth, intrinsics)
-        position = np.array(config['position']).reshape(3, 1)
-        rotation = R.from_quat(config['rotation']).as_matrix()
-        # rotation = p.getMatrixFromQuaternion(config['rotation'])
-        # rotation = np.array(rotation).reshape(3, 3)
-        transform = np.eye(4)
-        transform[:3, :] = np.hstack((rotation, position))
-        xyz = transform_pointcloud(xyz, transform)
-        xyzs.append(xyz)
-
-    xyzs, colors, labels = flatten_pcd_data(xyzs, colors, labels)
-    return xyzs, colors, labels
-
-def visualize_pcd(xyzs, colors):
-    point_cloud = open3d.geometry.PointCloud()
-    point_cloud.points = open3d.utility.Vector3dVector(xyzs)
-    point_cloud.colors = open3d.utility.Vector3dVector(colors)
-    open3d.visualization.draw_geometries([point_cloud])
-
-def get_data_from_obs(obs):
-    print('len of obs:', len(obs))
-
-    colors = []
-    depths = []
-    configs = []
-
-    for i in range(len(obs)):
-        colors.extend(obs[i]['image']['color'])
-        depths.extend(obs[i]['image']['depth'])
-        configs.extend(obs[i]['configs'])
-
-    return colors, depths, configs
-
-# def wrapper(poses, imgfiles, imgs):
-#     colors = []
-#     depths = []
-#     configs = []
-#     for fname in imgfiles:
-#
-#     pass
-
-def save_data_for_colmap(colors, depths, configs, dirname):
-
-    color_dir = os.path.join(dirname, 'images')
-    depth_dir = os.path.join(dirname, 'depths')
-    config_dir = os.path.join(dirname, 'configs')
+    color_dir = os.path.join(colmap_dir, 'images')
+    depth_dir = os.path.join(colmap_dir, 'depths')
+    config_dir = os.path.join(colmap_dir, 'configs')
 
     if not os.path.exists(color_dir):
         os.makedirs(color_dir)
         os.makedirs(depth_dir)
         os.makedirs(config_dir)
 
-    for idx, color in enumerate(colors):
-        color_fname = f'color{idx}.png'
+    # print('Starting!')
+    robot = Robot('ur5e_2f140',
+                  pb=False,
+                  use_arm=False,
+                  use_cam=True)
+    cam_params_shared = None
+
+    idx = 0
+    # while True:
+    for idx in range(n):
+        input('Press any key')
+        # if keyboard.is_pressed("q"):
+        #     print('exiting data collection')
+        #     break
+
+        # time.sleep(2)
+        color, depth = robot.cam.get_images(get_rgb=True, get_depth=True)
+
+        intrinsic = robot.cam.get_cam_int()
+        fname = datetime.now().strftime('%Y%m%d_%H%M%S')
+        print(idx,':', fname)
+
+        # pos, ori = get_pose_from_transformation(robot.cam.get_cam_ext())
+        config = {'intrinsics': intrinsic}
+                #   'position': position,
+                #   'rotation': ori}
+
+        cam_params = get_cam_params_from_intr(intrinsic)
+        if cam_params_shared is None:
+            cam_params_shared = cam_params
+        else:
+            assert (cam_params_shared == cam_params)
+
+        color_fname = fname + '.png'
         color = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
         cv2.imwrite(os.path.join(color_dir, color_fname), color)
 
-    for idx, depth in enumerate(depths):
-        depth_scale = 1000
-        depth_fname = f'depth{idx}.png'
-        sdepth = depth * depth_scale
-        cv2.imwrite(os.path.join(depth_dir, depth_fname),
-                    sdepth.astype(np.uint16))
+        depth_fname = fname + '.pkl'
+        with open(os.path.join(depth_dir, depth_fname), 'wb') as f:
+            pickle.dump(depth, f)
 
-    for idx, config in enumerate(configs):
-        config_fname = f'config{idx}.pkl'
+        config_fname = fname + '.pkl'
         with open(os.path.join(config_dir, config_fname), 'wb') as f:
             pickle.dump(config, f)
+        
+        idx += 1
 
+    with open(os.path.join(colmap_dir, 'shared_intrinsic.pkl'), 'wb') as f:
+        pickle.dump(cam_params_shared, f)
+
+
+def clear_colmap_dirs(colmap_dir):
+    sparse = os.path.join(colmap_dir, 'sparse')
+    database = os.path.join(colmap_dir, 'database.db')
+    out = os.path.join(colmap_dir, 'colmap_output.txt')
+
+    if os.path.exists(sparse):
+        shutil.rmtree(sparse)
+
+    if os.path.exists(database):
+        os.remove(database)
+        os.remove(out)
+
+def get_cam_params_from_intr(intr):
+    fx = intr[0,0]
+    fy = intr[1,1]
+    cx = intr[0,2]
+    cy = intr[1,2]
+    params = [fx, fy, cx, cy]
+    return ','.join([str(p) for p in params])
+
+def get_intr_from_cam_params(basedir):
+    cameras = read_cameras_text(os.path.join(basedir, 'sparse/0/cameras.txt'))
+    assert (len(cameras)==1)
+    cam = cameras[list(cameras.keys())[0]]
+    fx, fy, cx, cy = cam.params
+    h, w = cam.height, cam.width
+    intr = np.array([[fx, 0, cx],
+                     [0, fy, cy],
+                     [0,  0,  1]])
+    return intr
+
+
+def read_all(basedir, depth_scale=1000):
+    fwh = [None, None, None]
+    poses, imgfiles = load_data(colmap_dir, *fwh)
+    cam_intrinsics = get_intr_from_cam_params(basedir)
+
+    print(f"Cam intrinsic: {cam_intrinsics}")
+    print("Poses length:", len(poses))
+
+    colors = []
+    depths = []
+    configs = []
+
+    for idx in range(len(imgfiles)):
+        print(f'Image: {imgfiles[idx]}')
+        # print(f'Camera pose: {poses[idx]}')
+        # print('----------------------------\n')
+        color_fname = os.path.join(basedir, 'images', imgfiles[idx])
+        depth_fname = os.path.join(basedir, 'depths', imgfiles[idx].replace('.png', '.pkl'))
+        config_fname = os.path.join(basedir, 'configs', imgfiles[idx].replace('.png', '.pkl'))
+
+        with open(depth_fname, 'rb') as f:
+            depth = pickle.load(f)
+
+        color = cv2.imread(color_fname)
+        color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
+
+        with open(config_fname, 'rb') as f:
+            config = pickle.load(f)
+            pos, ori = poses[idx]
+            config['position'] = pos
+            config['orientation'] = ori
+            config['intrinsics'] = cam_intrinsics
+            # config['position'] = [0,0,0]
+            # config['rotation'] = [0,0,0,1]
+            print(f'File: {imgfiles[idx]}, {config}')
+
+        colors.append(color)
+        depths.append(depth)
+        configs.append(config)
+
+    last = len(colors)
+    print(last, 'inside read al')
+    return colors[:last], depths[:last], configs[:last]
 
 if __name__ == '__main__':
 
-    filename = '/Users/meenalp/Desktop/MEng/segmentation/example.pkl'
-    with open(filename, 'rb') as f:
-        obs = pickle.load(f)
-    colors, depths, configs = get_data_from_obs(obs)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--skip-data-collection', action='store_true', default=False)
+    parser.add_argument('--skip-colmap', action='store_true', default=False)
+    parser.add_argument('--dense-reconstruct', action='store_true', default=False)
+    parser.add_argument('--n', type=int, default=10)
+    args = parser.parse_args()
 
-    colmap_dir = '/Users/meenalp/Desktop/MEng/segmentation/segmentation/scene_dir'
-    # save_data_for_colmap(colors[:2], depths[:2], configs[:2], colmap_dir)
-    save_data_for_colmap(colors, depths, configs, colmap_dir)
+    colmap_dir = './scene_dir'
 
-    success = gen_poses(colmap_dir, 'exhaustive_matcher',
-                call_colmap='/Applications/COLMAP.app/Contents/MacOS/colmap')
-    if success:
-        print('COLMAP ran successfully!')
+    if not args.skip_data_collection:
+        print('Collecting data ...')
+        if os.path.exists(colmap_dir):
+            shutil.rmtree(colmap_dir)
 
-    # fwh = [1, args.width, args.height]
-    # print('factor/width/height args:', fwh)
-    # if args.factor is None and args.width is None and args.height is None:
-    fwh = [None, None, None]
-    poses, bds, imgs, imgfiles = load_data(colmap_dir, *fwh)
+        collect_data(args.n, colmap_dir)
 
-    print("Poses:", poses, poses.shape)
-    # return
+    if not args.skip_colmap:
+        clear_colmap_dirs(colmap_dir)
+        with open(os.path.join(colmap_dir, 'shared_intrinsic.pkl'), 'rb') as f:
+            cam_params_shared = pickle.load(f)  
+        success = gen_poses(colmap_dir, 'exhaustive_matcher', cam_model='PINHOLE', 
+                    cam_params=cam_params_shared,
+                    call_colmap='colmap', dense_reconstruct=args.dense_reconstruct)
+        if success:
+            print('COLMAP ran successfully!')
 
-
-    # xyzs, colors, labels = get_pcds(colors, depths, configs)
-    #
-    # xyzs = np.array(xyzs)
-    # colors = np.array(colors)/255.0
-    #
-    # visualize_pcd(xyzs, colors)
+    colors, depths, configs = read_all(colmap_dir)
+    print('inside main', len(colors))
+    xyzs, colors, cam_extrs = get_pcds(colors, depths, configs)
+    save_pcd(xyzs, colors, cam_extrs, 
+            os.path.join(colmap_dir, 'final_merged_pcd.ply'), 
+            save_pcd=True,
+            visualize_pcd=True)

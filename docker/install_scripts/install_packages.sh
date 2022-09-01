@@ -10,3 +10,5 @@ rm -rf /var/lib/apt/lists/*
 pip install pytorch-lightning
 pip install matplotlib
 pip install open3d
+pip install imageio
+pip install scikit-image

@@ -12,3 +12,5 @@ cd /workspace/
 eval "bash"
 
 exec "$@"
+
+pip install keyboard

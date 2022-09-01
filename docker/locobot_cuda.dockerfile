@@ -84,16 +84,16 @@ COPY calibrated.json /root/.robot/calibrated.json
 RUN echo "source /opt/ros/noetic/setup.bash" >> /root/.bashrc
 RUN echo "source /root/create_ws/devel/setup.bash" >> /root/.bashrc
 RUN echo "source /root/locobot_ws/devel/setup.bash" >> /root/.bashrc
-RUN echo "export ROS_MASTER_URI=http://192.168.50.117:11311" >> /root/.bashrc
-RUN echo "export ROS_IP=192.168.50.111" >> /root/.bashrc
-
-COPY ./install_scripts/install_packages.sh /tmp/install_packages.sh
-RUN chmod +x /tmp/install_packages.sh
-RUN /tmp/install_packages.sh
+RUN echo "export ROS_MASTER_URI=http://128.30.16.164:11311" >> /root/.bashrc
+RUN echo "export ROS_IP=128.30.16.164" >> /root/.bashrc
 
 COPY ./install_scripts/install_colmap.sh /tmp/install_colmap.sh
 RUN chmod +x /tmp/install_colmap.sh
 RUN /tmp/install_colmap.sh
+
+COPY ./install_scripts/install_packages.sh /tmp/install_packages.sh
+RUN chmod +x /tmp/install_packages.sh
+RUN /tmp/install_packages.sh
 
 WORKDIR /
 # Exposing the ports
